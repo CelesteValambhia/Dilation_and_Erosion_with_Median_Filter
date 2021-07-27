@@ -11,6 +11,12 @@
 #include <iostream>
 
 
+#include "cpu_impl.h"
+// Structures
+
+
+
+
 // Private Functions
 
 int getIndexGlobal(std::size_t countX, int i, int j) {
@@ -143,6 +149,129 @@ void add_salt_and_pepper(const std::vector<float> &h_input, std::vector<float> &
         h_outputCpu[getIndexGlobal(countX, (int )(rand() % countX), (int)(rand() % countY)) ]= 0;
     }
 }
+
+void dilate(const std::vector<float> &h_input, std::vector<float> &h_outputCpu, std::size_t countX, std::size_t countY, structuring_element struc_ele){
+
+    bool is_odd_x, is_odd_y;
+    int candidate_x, candidate_y;
+
+    int n = struc_ele.sizeX * struc_ele.sizeY;
+
+    if((struc_ele.sizeX % 2) == 1) is_odd_x = true;
+    else is_odd_x = false;
+
+    if((struc_ele.sizeY % 2) == 1) is_odd_y = true;
+    else is_odd_y = false;
+
+    if(is_odd_x){
+        candidate_x = ((std::size_t)(struc_ele.sizeX / 2));
+    }
+    else{
+        candidate_x = ((std::size_t)(struc_ele.sizeX / 2) - 1);
+    }
+
+    if(is_odd_y){
+        candidate_y = ((std::size_t)(struc_ele.sizeY / 2));
+    }
+    else{
+        candidate_y = ((std::size_t)(struc_ele.sizeY / 2) - 1);
+    }
+
+
+    for(int i = candidate_x; i < countX - candidate_x; ++i) {
+        for (int j = candidate_y; j < countY - candidate_y; ++j) {
+            bool hit = false;
+            for (int temp_i = i-candidate_x; temp_i <= i+candidate_x ; ++temp_i) {
+                for (int temp_j = j - candidate_y; temp_j <= j + candidate_y; ++temp_j) {
+                    int temp_index_i = temp_i - (i-candidate_x);
+                    int temp_index_j = temp_j - (j-candidate_y);
+
+                    if(
+                            ((struc_ele.struct_kernel[temp_index_i+(struc_ele.sizeX*temp_index_j)]) == 1)
+                            &&
+                            (getValueGlobal(h_input, countX, countY, temp_i, temp_j) == 1)
+                    ){
+                        hit = true;
+                        break;
+                    }
+                    else{
+                        hit = false;
+                    }
+                }
+                if(hit) break;
+            }
+            if (hit){
+                h_outputCpu[getIndexGlobal(countX, i, j)] = 1;
+            }
+            else{
+                h_outputCpu[getIndexGlobal(countX, i, j)] = getValueGlobal(h_input, countX, countY, i, j);
+            }
+        }
+    }
+
+}
+
+
+void erode(const std::vector<float> &h_input, std::vector<float> &h_outputCpu, std::size_t countX, std::size_t countY, structuring_element struc_ele){
+
+    bool is_odd_x, is_odd_y;
+    int candidate_x, candidate_y;
+
+    int n = struc_ele.sizeX * struc_ele.sizeY;
+
+    if((struc_ele.sizeX % 2) == 1) is_odd_x = true;
+    else is_odd_x = false;
+
+    if((struc_ele.sizeY % 2) == 1) is_odd_y = true;
+    else is_odd_y = false;
+
+    if(is_odd_x){
+        candidate_x = ((std::size_t)(struc_ele.sizeX / 2));
+    }
+    else{
+        candidate_x = ((std::size_t)(struc_ele.sizeX / 2) - 1);
+    }
+
+    if(is_odd_y){
+        candidate_y = ((std::size_t)(struc_ele.sizeY / 2));
+    }
+    else{
+        candidate_y = ((std::size_t)(struc_ele.sizeY / 2) - 1);
+    }
+
+
+    for(int i = candidate_x; i < countX - candidate_x; ++i) {
+        for (int j = candidate_y; j < countY - candidate_y; ++j) {
+            bool hit = false;
+            for (int temp_i = i-candidate_x; temp_i <= i+candidate_x ; ++temp_i) {
+                for (int temp_j = j - candidate_y; temp_j <= j + candidate_y; ++temp_j) {
+                    int temp_index_i = temp_i - (i-candidate_x);
+                    int temp_index_j = temp_j - (j-candidate_y);
+
+                    if(
+                            ((struc_ele.struct_kernel[temp_index_i+(struc_ele.sizeX*temp_index_j)]) == 1)
+                            &&
+                            (getValueGlobal(h_input, countX, countY, temp_i, temp_j) == 1)
+                            ){
+                        hit = true;
+
+                    }
+                    else{
+                        hit = false;
+                        break;
+                    }
+                    }
+                if(hit){
+                    break;
+                }
+                }
+                if(hit) h_outputCpu[getIndexGlobal(countX, i, j)] = 1;
+                else h_outputCpu[getIndexGlobal(countX, i, j)] = 0;
+            }
+
+
+        }
+    }
 
 
 

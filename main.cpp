@@ -18,6 +18,8 @@
 #include <iostream>
 #include <cmath>
 
+#include <boost/lexical_cast.hpp>
+
 // Include the CPU Implementation
 #include "CPU_impl/cpu_impl.h"
 
@@ -103,11 +105,6 @@ int main(int argc, char **argv) {
     // Declare some values
     std::size_t wgSizeX = 32;                          // Number of work items per work group in X direction
     std::size_t wgSizeY = 32;
-//    std::size_t countX ;                               // Overall number of work items in X direction = Number of elements in X direction
-//    std::size_t countY ;                               // countX *= 3; countY *= 3;
-//    std::size_t count ;                                // Overall number of elements
-//    std::size_t size ;                                 // Size of data in bytes
-
     /**
      * Read the test image here
      * */
@@ -124,11 +121,13 @@ int main(int argc, char **argv) {
 
     // Allocate space for output data from CPU and GPU on the host
     std::vector<float> h_input(count);
+    std::vector<float> temp(count);
     std::vector<float> h_outputCpu(count);
     std::vector<float> h_outputGpu(count);
 
     // Initialize memory to 0xff (useful for debugging because otherwise GPU memory will contain information from last execution)
     memset(h_input.data(), 255, size);
+    memset(temp.data(), 255, size);
     memset(h_outputCpu.data(), 255, size);
     memset(h_outputGpu.data(), 255, size);
 
@@ -141,14 +140,80 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Do calculation on the host side
+    //////////////// Do calculation on the host side : declare the structuring element
+    int struc_ele_width = 5;
+    int struc_ele_height = 5;
+    int struc_element_count = struc_ele_width*struc_ele_height;
+    std::vector<int> dilation_element(5*5);
+    memset(dilation_element.data(), 0, struc_element_count*sizeof(int ));
+//    dilation_element = {
+//            0, 0, 1, 1, 1, 0, 0,
+//            0, 0, 1, 1, 1, 0, 0,
+//            1, 1, 1, 1, 1, 1, 1,
+//            1, 1, 1, 1, 1, 1, 1,
+//            1, 1, 1, 1, 1, 1, 1,
+//            0, 0, 1, 1, 1, 0, 0,
+//            0, 0, 1, 1, 1, 0, 0};
+
+    dilation_element = {
+            0, 0, 1, 0, 0,
+            0, 1, 1, 1, 0,
+            1, 1, 1, 1, 1,
+            0, 1, 1, 1, 0,
+            0, 0, 1, 0, 0};
+
+//int dilation_element[3][3] = {
+//        {0, 1, 0},
+//        {1, 1, 1},
+//        {0, 1, 0}
+//};
+    structuring_element a_struc_ele = {
+            dilation_element.data(),
+            struc_ele_width,
+            struc_ele_height,
+            3,                          //  Candidate pixel coordinates
+            3                           //  Candidate pixel coordinates
+    };
+
+    ////////////////// Support Operations /////////////////////////
+
+//    add_salt_and_pepper(h_input, h_outputCpu, countX, countY);
+//    image_threshold(h_input, h_outputCpu, countX, countY, 0.5);
+    ////////////////////////////////////////////////
+
     Core::TimeSpan t1 = Core::getCurrentTime();
     median_filter(h_input, 5, h_outputCpu, countX, countY);
-//    add_salt_and_pepper(h_input, h_outputCpu, countX, countY);
-    Core::TimeSpan cpuTime = Core::getCurrentTime() - t1;
+    Core::TimeSpan cpuTime_median = Core::getCurrentTime() - t1;
+    Core::writeImagePGM(output_path+"output_median_cpu.pgm", h_outputCpu, countX, countY);
 
-    //////// Store CPU output image ///////////////////////////////////
-    Core::writeImagePGM(output_path+"output_sobel_cpu.pgm", h_outputCpu, countX, countY);
+    //////////// Perform Dilation ////////////////////////////////////
+    Core::TimeSpan t2 = Core::getCurrentTime();
+    dilate(h_input, h_outputCpu, countX, countY, a_struc_ele);
+    Core::TimeSpan cpuTime_dilation = Core::getCurrentTime() - t2;
+    Core::writeImagePGM(output_path+"output_dilation_cpu.pgm", h_outputCpu, countX, countY);
+
+    //////////// Perform Erosion ////////////////////////////////////
+    Core::TimeSpan t3 = Core::getCurrentTime();
+    erode(h_input, h_outputCpu, countX, countY, a_struc_ele);
+    Core::TimeSpan cpuTime_erosion = Core::getCurrentTime() - t3;
+    Core::writeImagePGM(output_path+"output_erosion_cpu.pgm", h_outputCpu, countX, countY);
+
+    //////////// Perform Opening ////////////////////////////////////
+    Core::TimeSpan t4 = Core::getCurrentTime();
+    dilate(h_input, temp, countX, countY, a_struc_ele);
+    erode(temp, h_outputCpu, countX, countY, a_struc_ele);
+    Core::TimeSpan cpuTime_opening = Core::getCurrentTime() - t4;
+    Core::writeImagePGM(output_path+"output_opening_cpu.pgm", h_outputCpu, countX, countY);
+
+    //////////// Perform Closing ///////////////////////////////////
+    Core::TimeSpan t5 = Core::getCurrentTime();
+    erode(h_input, temp, countX, countY, a_struc_ele);
+    dilate(temp, h_outputCpu, countX, countY, a_struc_ele);
+    Core::TimeSpan cpuTime_closing = Core::getCurrentTime() - t5;
+    Core::writeImagePGM(output_path+"output_closing_cpu.pgm", h_outputCpu, countX, countY);
+
+
+
 
 
     //////// Load Images in the device ////////////////////////////////
@@ -181,19 +246,47 @@ int main(int argc, char **argv) {
     /////////// Load Buffers ///////////////////
     cl::Buffer d_input_buffer(context, CL_MEM_READ_WRITE, size);
     cl::Buffer d_output_buffer(context, CL_MEM_READ_WRITE, size);
+    cl::Buffer temp_buffer(context, CL_MEM_READ_WRITE, size);
+    cl::Buffer d_dilation_kernel(context, CL_MEM_READ_WRITE, struc_element_count*sizeof(int ));
+
 
     queue.enqueueWriteBuffer(d_input_buffer, true, 0, size, h_input.data());
-
+    queue.enqueueWriteBuffer(d_dilation_kernel, true, 0, struc_element_count*sizeof(int ), dilation_element.data());
 
     /**
      * Load All the CL programs that you design here:
      * */
 
-    cl::Program median_program = buildProgram(context, devices, "../src/median.cl");
-    cl::Kernel median_kernel_3(median_program, "medianKernel_5");
+//    cl::Program median_program = buildProgram(context, devices, "../src/median.cl");
+    cl::Program median_program = OpenCL::loadProgramSource(context, "../src/median.cl");
+    OpenCL::buildProgram(
+            median_program,
+            devices, "-DKERNEL_SIZE_MAIN=" + boost::lexical_cast<std::string>(5)         // SPECIFY KERNEL SIZE
+    );
+    cl::Kernel median_kernel_3(median_program, "medianKernel");
     cl::Kernel median_kernel_image_3(median_program, "medianKernel_image_5");
 
+//    cl::Program dilation_program = buildProgram(context, devices, "../src/dilation.cl");
+    cl::Program dilation_program = OpenCL::loadProgramSource(context, "../src/dilation.cl");
+    OpenCL::buildProgram(
+            dilation_program,
+            devices, "-DIMAGE_SIZE_X=" + boost::lexical_cast<std::string>(countX) + " -DIMAGE_SIZE_Y=" + boost::lexical_cast<std::string>(countY)
+    );
 
+    cl::Kernel dilation_kernel(dilation_program, "dilate");
+    cl::Kernel dilation_kernel_image(dilation_program, "dilate_image");
+
+    cl::Program erosion_program = buildProgram(context, devices, "../src/erosion.cl");
+    cl::Kernel erosion_kernel(erosion_program, "erode");
+    cl::Kernel erosion_kernel_image(erosion_program, "erode_image");
+
+
+    cl::Program o_c_program = OpenCL::loadProgramSource(context, "../src/opening_closing.cl");
+    OpenCL::buildProgram(
+            o_c_program,
+            devices, "-DIMAGE_SIZE_X=" + boost::lexical_cast<std::string>(countX) + " -DIMAGE_SIZE_Y=" + boost::lexical_cast<std::string>(countY)
+    );
+    cl::Kernel opening_kernel(o_c_program, "opening");
     /////////////////// Run the Kernel ///////////////////////
 
 
@@ -212,9 +305,9 @@ int main(int argc, char **argv) {
     queue.enqueueReadBuffer(d_output_buffer, true, 0, size, h_outputGpu.data(), NULL, NULL);
 
     //////// Store GPU output image : Bufferized Median Kernel ///////////////////////////////////
-    Core::writeImagePGM(output_path+"output_sobel_gpu_bufferized.pgm", h_outputGpu, countX, countY);
+    Core::writeImagePGM(output_path+"output_median_gpu_bufferized.pgm", h_outputGpu, countX, countY);
 
-    std::cout << "INFO:\t MEDIAN FILTER (Bufferized):\tSpeedup = "<< (cpuTime.getSeconds() / OpenCL::getElapsedTime(median_buffer_execution).getSeconds()) << std::endl;
+    std::cout << "INFO:\t MEDIAN FILTER (Bufferized):\tSpeedup = "<< (cpuTime_median.getSeconds() / OpenCL::getElapsedTime(median_buffer_execution).getSeconds()) << std::endl;
 
 
     //////// Median Kernel : with Image2D //////////////
@@ -240,8 +333,179 @@ int main(int argc, char **argv) {
                            NULL
     );
     //////// Store GPU output image : Image Median Kernel ///////////////////////////////////
-    Core::writeImagePGM(output_path+"output_sobel_gpu_image.pgm", h_outputGpu, countX, countY);
-    std::cout << "INFO:\t MEDIAN FILTER (Image2D):\tSpeedup = "<< (cpuTime.getSeconds() / OpenCL::getElapsedTime(median_image_execution).getSeconds()) << std::endl;
+    Core::writeImagePGM(output_path+"output_median_gpu_image.pgm", h_outputGpu, countX, countY);
+    std::cout << "INFO:\t MEDIAN FILTER (Image2D):\tSpeedup = "<< (cpuTime_median.getSeconds() / OpenCL::getElapsedTime(median_image_execution).getSeconds()) << std::endl;
+
+
+    ////////// Dilation : Bufferized /////////////////////////////////////////
+    cl::Event dilation_execution;
+    dilation_kernel.setArg<cl::Buffer>(0, d_input_buffer);
+    dilation_kernel.setArg<cl::Buffer>(1, d_output_buffer);
+    dilation_kernel.setArg<cl::Buffer>(2, d_dilation_kernel);
+    dilation_kernel.setArg<int>(3, struc_ele_width);
+    dilation_kernel.setArg<int>(4, struc_ele_height);
+
+    queue.enqueueNDRangeKernel(dilation_kernel,
+                               cl::NullRange,
+                               cl::NDRange(countX, countY),
+                               cl::NDRange(wgSizeX, wgSizeY),
+                               NULL,
+                               &dilation_execution);
+
+    queue.enqueueReadBuffer(d_output_buffer, true, 0, size, h_outputGpu.data(), NULL, NULL);
+
+    //////// Store GPU output image : Bufferized Dilation ///////////////////////////////////
+    Core::writeImagePGM(output_path+"output_dilation_bufferized_gpu.pgm", h_outputGpu, countX, countY);
+    std::cout << "INFO:\t Dilation (Buffer):\tSpeedup = "<< (cpuTime_dilation.getSeconds() / OpenCL::getElapsedTime(dilation_execution).getSeconds()) << std::endl;
+
+    ///////////////// Dilation : Image2D ///////////////////
+    cl::Event dilation_image_execution;
+    dilation_kernel_image.setArg<cl::Image2D>(0, d_input_image);
+    dilation_kernel_image.setArg<cl::Image2D>(1, d_output_image);
+    dilation_kernel_image.setArg<cl::Buffer>(2, d_dilation_kernel);
+    dilation_kernel_image.setArg<int>(3, struc_ele_width);
+    dilation_kernel_image.setArg<int>(4, struc_ele_height);
+
+
+    queue.enqueueNDRangeKernel(dilation_kernel_image,
+                               cl::NullRange,
+                               cl::NDRange(countX, countY),
+                               cl::NDRange(wgSizeX, wgSizeY),
+                               NULL,
+                               &dilation_image_execution);
+
+    queue.enqueueReadImage(d_output_image,
+                           true,
+                           origin,
+                           region,
+                           countX * sizeof(float),
+                           0,
+                           h_outputGpu.data(),
+                           nullptr,
+                           NULL
+    );
+    //////// Store GPU output image : Image Dilation Kernel ///////////////////////////////////
+    Core::writeImagePGM(output_path+"output_dilation_gpu_image.pgm", h_outputGpu, countX, countY);
+    std::cout << "INFO:\t Dilation (Image2D):\tSpeedup = "<< (cpuTime_dilation.getSeconds() / OpenCL::getElapsedTime(dilation_image_execution).getSeconds()) << std::endl;
+
+
+
+    ////////// Erosion : Bufferized /////////////////////////////////////////
+    cl::Event erosion_execution;
+    erosion_kernel.setArg<cl::Buffer>(0, d_input_buffer);
+    erosion_kernel.setArg<cl::Buffer>(1, d_output_buffer);
+    erosion_kernel.setArg<cl::Buffer>(2, d_dilation_kernel);
+    erosion_kernel.setArg<int>(3, struc_ele_width);
+    erosion_kernel.setArg<int>(4, struc_ele_height);
+
+    queue.enqueueNDRangeKernel(erosion_kernel,
+                               cl::NullRange,
+                               cl::NDRange(countX, countY),
+                               cl::NDRange(wgSizeX, wgSizeY),
+                               NULL,
+                               &erosion_execution);
+
+    queue.enqueueReadBuffer(d_output_buffer, true, 0, size, h_outputGpu.data(), NULL, NULL);
+
+    //////// Store GPU output image : Bufferized Erosino ///////////////////////////////////
+    Core::writeImagePGM(output_path+"output_erosion_bufferized_gpu.pgm", h_outputGpu, countX, countY);
+    std::cout << "INFO:\t Erosion (Buffer):\tSpeedup = "<< (cpuTime_erosion.getSeconds() / OpenCL::getElapsedTime(erosion_execution).getSeconds()) << std::endl;
+
+    ///////////////// Erosion : Image2D ///////////////////
+    cl::Event erosion_image_execution;
+    erosion_kernel_image.setArg<cl::Image2D>(0, d_input_image);
+    erosion_kernel_image.setArg<cl::Image2D>(1, d_output_image);
+    erosion_kernel_image.setArg<cl::Buffer>(2, d_dilation_kernel);
+    erosion_kernel_image.setArg<int>(3, struc_ele_width);
+    erosion_kernel_image.setArg<int>(4, struc_ele_height);
+
+
+    queue.enqueueNDRangeKernel(erosion_kernel_image,
+                               cl::NullRange,
+                               cl::NDRange(countX, countY),
+                               cl::NDRange(wgSizeX, wgSizeY),
+                               NULL,
+                               &erosion_image_execution);
+
+    queue.enqueueReadImage(d_output_image,
+                           true,
+                           origin,
+                           region,
+                           countX * sizeof(float),
+                           0,
+                           h_outputGpu.data(),
+                           nullptr,
+                           NULL
+    );
+    //////// Store GPU output image : Image Erosion Kernel ///////////////////////////////////
+    Core::writeImagePGM(output_path+"output_erosion_gpu_image.pgm", h_outputGpu, countX, countY);
+    std::cout << "INFO:\t Erosion (Image2D):\tSpeedup = "<< (cpuTime_erosion.getSeconds() / OpenCL::getElapsedTime(erosion_image_execution).getSeconds()) << std::endl;
+
+    //////// Opening /////////////////////////////////////////////////////////////////////////
+    cl::Event opening_execution;
+    dilation_kernel.setArg<cl::Buffer>(0, d_input_buffer);
+    dilation_kernel.setArg<cl::Buffer>(1, temp_buffer);
+    dilation_kernel.setArg<cl::Buffer>(2, d_dilation_kernel);
+    dilation_kernel.setArg<int>(3, struc_ele_width);
+    dilation_kernel.setArg<int>(4, struc_ele_height);
+
+    queue.enqueueNDRangeKernel(dilation_kernel,
+                               cl::NullRange,
+                               cl::NDRange(countX, countY),
+                               cl::NDRange(wgSizeX, wgSizeY),
+                               NULL,
+                               &opening_execution);
+
+    erosion_kernel.setArg<cl::Buffer>(0, temp_buffer);
+    erosion_kernel.setArg<cl::Buffer>(1, d_output_buffer);
+    erosion_kernel.setArg<cl::Buffer>(2, d_dilation_kernel);
+    erosion_kernel.setArg<int>(3, struc_ele_width);
+    erosion_kernel.setArg<int>(4, struc_ele_height);
+
+    queue.enqueueNDRangeKernel(erosion_kernel,
+                               cl::NullRange,
+                               cl::NDRange(countX, countY),
+                               cl::NDRange(wgSizeX, wgSizeY),
+                               NULL,
+                               &opening_execution);
+
+
+    queue.enqueueReadBuffer(d_output_buffer, true, 0, size, h_outputGpu.data(), NULL, NULL);
+    Core::writeImagePGM(output_path+"opening_gpu_image.pgm", h_outputGpu, countX, countY);
+    std::cout << "INFO:\t Opening :\tSpeedup = "<< (cpuTime_opening.getSeconds() / OpenCL::getElapsedTime(opening_execution).getSeconds()) << std::endl;
+
+    //////////////////////////// CLOSING ////////////////////////////////////
+    cl::Event closing_execution;
+    erosion_kernel.setArg<cl::Buffer>(0, d_input_buffer);
+    erosion_kernel.setArg<cl::Buffer>(1, temp_buffer);
+    erosion_kernel.setArg<cl::Buffer>(2, d_dilation_kernel);
+    erosion_kernel.setArg<int>(3, struc_ele_width);
+    erosion_kernel.setArg<int>(4, struc_ele_height);
+
+    queue.enqueueNDRangeKernel(erosion_kernel,
+                               cl::NullRange,
+                               cl::NDRange(countX, countY),
+                               cl::NDRange(wgSizeX, wgSizeY),
+                               NULL,
+                               &closing_execution);
+
+    dilation_kernel.setArg<cl::Buffer>(0, temp_buffer);
+    dilation_kernel.setArg<cl::Buffer>(1, d_output_buffer);
+    dilation_kernel.setArg<cl::Buffer>(2, d_dilation_kernel);
+    dilation_kernel.setArg<int>(3, struc_ele_width);
+    dilation_kernel.setArg<int>(4, struc_ele_height);
+
+    queue.enqueueNDRangeKernel(dilation_kernel,
+                               cl::NullRange,
+                               cl::NDRange(countX, countY),
+                               cl::NDRange(wgSizeX, wgSizeY),
+                               NULL,
+                               &closing_execution);
+
+    queue.enqueueReadBuffer(d_output_buffer, true, 0, size, h_outputGpu.data(), NULL, NULL);
+    Core::writeImagePGM(output_path+"closing_gpu_image.pgm", h_outputGpu, countX, countY);
+    std::cout << "INFO:\t Closing :\tSpeedup = "<< (cpuTime_closing.getSeconds() / OpenCL::getElapsedTime(closing_execution).getSeconds()) << std::endl;
+
 
 
 }
