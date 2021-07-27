@@ -118,6 +118,9 @@ int main(int argc, char **argv) {
             inputHeight
     );
 
+    // Size for the median kernel
+    int median_kernel_size = 3;
+
 
     // Allocate space for output data from CPU and GPU on the host
     std::vector<float> h_input(count);
@@ -182,7 +185,7 @@ int main(int argc, char **argv) {
     ////////////////////////////////////////////////
 
     Core::TimeSpan t1 = Core::getCurrentTime();
-    median_filter(h_input, 5, h_outputCpu, countX, countY);
+    median_filter(h_input, median_kernel_size, h_outputCpu, countX, countY);
     Core::TimeSpan cpuTime_median = Core::getCurrentTime() - t1;
     Core::writeImagePGM(output_path+"output_median_cpu.pgm", h_outputCpu, countX, countY);
 
@@ -261,10 +264,10 @@ int main(int argc, char **argv) {
     cl::Program median_program = OpenCL::loadProgramSource(context, "../src/median.cl");
     OpenCL::buildProgram(
             median_program,
-            devices, "-DKERNEL_SIZE_MAIN=" + boost::lexical_cast<std::string>(5)         // SPECIFY KERNEL SIZE
+            devices, "-DKERNEL_SIZE_MAIN=" + boost::lexical_cast<std::string>(median_kernel_size)         // SPECIFY KERNEL SIZE
     );
     cl::Kernel median_kernel_3(median_program, "medianKernel");
-    cl::Kernel median_kernel_image_3(median_program, "medianKernel_image_5");
+    cl::Kernel median_kernel_image_3(median_program, "medianKernel_image");
 
 //    cl::Program dilation_program = buildProgram(context, devices, "../src/dilation.cl");
     cl::Program dilation_program = OpenCL::loadProgramSource(context, "../src/dilation.cl");
